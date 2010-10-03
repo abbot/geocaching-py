@@ -15,6 +15,8 @@ import sys
 from BeautifulSoup import BeautifulSoup
 from lxml import etree, html
 
+import tools
+
 __all__ = ['Geo', 'GeoCache']
 
 def extract_username(et):
@@ -71,7 +73,16 @@ attribute_map = {
     "flashlight": (44, "Flashlight required"),
     "landf": (45, "Lost And Found Tour"),
     }
-    
+
+def find_or_create(cache, tag):
+    query = cache.xpath('.//*[local-name()="%s"]' % tag)
+    if len(query) != 0:
+        return query[0]
+
+    groundspeak = cache.nsmap["groundspeak"]
+    element = etree.Element("{%s}%s" % (groundspeak, tag))
+    cache.append(element)
+    return element
 
 class Geo(object):
     cache_dir = os.path.expanduser("~/.cache/geocaching-py")
@@ -133,37 +144,44 @@ class Geo(object):
         et = self.send_req(login_url, urlencode(params))
         return extract_username(et)
 
-    def cache_gpx(self, geocode):
-        parts = list(urlparse(self.page_url("/seek/cache_details.aspx")))
-        parts[4] = urlencode({"wp": geocode})
-        url = urlunparse(parts)
-        full = self.send_req(url)
+    def guid_from_gc(self, geocode):
+        cache_details_url = self.page_url("/seek/cache_details.aspx?wp=" + geocode)
+        et = self.send_req(cache_details_url)
 
-        if not full.find('//title').text.strip().startswith(geocode):
+        if not et.find('//title').text.strip().startswith(geocode):
             return None
 
-        print_links = full.xpath('//a[contains(@href, "cdpf.aspx")]')
+        print_links = et.xpath('//a[contains(@href, "cdpf.aspx")]')
         if len(print_links) == 0:
             return None
+        guid = cgi.parse_qs(urlparse(print_links[0].get("href")).query)["guid"][0]
+        return guid
+        
+    def cache_gpx(self, guid):
+        printable_url = self.page_url("/seek/cdpf.aspx?guid=" + guid)
+        sendtogps_url = self.page_url("/seek/sendtogps.aspx?guid=" + guid)
 
-        info_plain = self.send(urljoin(url, print_links[0].get("href")))
+        info_plain = self.send(printable_url)
         info = html.parse(StringIO(info_plain))
         print >> sys.stderr, "Parsing printable version with BeautifulSoup"
         info_soup = BeautifulSoup(info_plain)
-        guid = cgi.parse_qs(urlparse(print_links[0].get("href")).query)["guid"][0]
-        s2gps = self.send(urljoin(url, "sendtogps.aspx?guid=" + guid))
+        
+        s2gps = self.send(sendtogps_url)
         s2gps = s2gps[s2gps.index("<?xml"):s2gps.index("</gpx>")+6]
         gpx = etree.parse(StringIO(s2gps))
 
-        short = gpx.xpath('//*[local-name()="cache"]/*[local-name()="short_description"]')[0]
-        cache = short.getparent()
+        cache = tools.cache(gpx)
+        if cache is None:
+            return None
+
+        short_desc = find_or_create(cache, "short_description")
+        long_desc = find_or_create(cache, "long_description")
+        hints = find_or_create(cache, "encoded_hints")
         
-        short.text = re.sub(r'\s+', ' ', info.find('//div[@id="div_sd"]').text_content()).strip()
-        long_desc = gpx.xpath('//*[local-name()="cache"]/*[local-name()="long_description"]')[0]
+        short_desc.text = re.sub(r'\s+', ' ', info.find('//div[@id="div_sd"]').text_content()).strip()
         long_desc.text = info_soup.find("div", {"id": "div_ld"}).renderContents().decode('utf-8')
         long_desc.set("html", "True")
 
-        hints = gpx.xpath('//*[local-name()="cache"]/*[local-name()="encoded_hints"]')[0]
         try:
             hints_text = re.sub(r'\s+', ' ', info_soup.find("div", {"id":"div_hint"}).div.renderContents().decode('utf-8')).strip()
             hints_text = re.sub(r'<br ?/?>', "\n", hints_text).decode("rot13")
@@ -171,13 +189,11 @@ class Geo(object):
         except AttributeError:
             hints.text = "No hint"
 
-        groundspeak = cache.nsmap["groundspeak"]
-        attrs = etree.Element("{%s}attributes" % groundspeak)
-        cache.append(attrs)
-        for path in full.xpath('//img[contains(@src, "/attributes/")]/@src'):
+        attrs = find_or_create(cache, "attributes")
+        for path in info.xpath('//img[contains(@src, "/attributes/")]/@src'):
             name, yesno = path.split("/")[-1].strip(".gif").split("-")
             if name in attribute_map:
-                attr = etree.Element("{%s}attribute" % groundspeak)
+                attr = find_or_create(attrs, "attribute")
                 attr.set("id", str(attribute_map[name][0]))
                 attr.text = attribute_map[name][1]
                 if yesno == "yes":
@@ -186,5 +202,4 @@ class Geo(object):
                     attr.set("inc", "0")
                 attrs.append(attr)
                     
-        #return guid, full, info_soup, s2gps, gpx
         return gpx
