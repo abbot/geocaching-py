@@ -5,6 +5,7 @@ import cgi
 from ConfigParser import SafeConfigParser
 import cookielib
 from cStringIO import StringIO
+import json
 import os
 import re
 from urllib import urlencode
@@ -74,6 +75,24 @@ attribute_map = {
     "landf": (45, "Lost And Found Tour"),
     }
 
+cache_type_map = {
+    "2": "traditional",
+    "3": "multicache",
+    "ape_32": "ape",
+    "8": "mystery",
+    "5": "letterbox",
+    "1858": "whereigo",
+    "6": "event",
+    "mega": "megaevent",
+    "13": "cito",
+    "earthcache": "earthcache",
+    "1304": "adventuremaze",
+    "4": "virtual",
+    "11": "webcam",
+    "10Years_32": "10years",
+    "12":"locationless"
+    }
+
 def find_or_create(cache, tag):
     query = cache.xpath('.//*[local-name()="%s"]' % tag)
     if len(query) != 0:
@@ -83,6 +102,11 @@ def find_or_create(cache, tag):
     element = etree.Element("{%s}%s" % (groundspeak, tag))
     cache.append(element)
     return element
+
+def cache_type(code):
+    if code in cache_type_map:
+        return cache_type_map[code]
+    return code.lower().strip().replace(' ', '-')
 
 class Geo(object):
     cache_dir = os.path.expanduser("~/.cache/geocaching-py")
@@ -203,3 +227,115 @@ class Geo(object):
                 attrs.append(attr)
                     
         return gpx
+
+    def address_to_coords(self, address):
+        """
+        Get the coordinates using Google Maps API from the given address
+        """
+        params = urlencode({"sensor": "false",
+                            "address": address})
+        url = "http://maps.googleapis.com/maps/api/geocode/json?" + params
+        results = json.loads(self.send(url))
+        if results['status'] != 'OK':
+            return None
+        if len(results['results']) > 1:
+            print "Warning: search for %s returned more then one results, using the first one" % address
+        result = results['results'][0]
+        location = result['geometry']['location']
+        return "%.7f" % location['lat'], "%.7f" % location['lng']
+
+    def parse_page(self, et):
+        query = et.xpath('//table[contains(@class, "SearchResultsTable")]')
+        if len(query) == 0:
+            print "Results table not found"
+            return None
+        table = query[0]
+        results = []
+        rows = table.xpath('./tr[contains(@class, "Data")]')
+        for row in rows:
+            url = row.xpath('.//img[contains(@src, "WptTypes")]')[0].get("src")
+            wpt_type = cache_type(url.split('/')[-1].split('.')[0])
+            cols = row.xpath("./td")
+            a = cols[5].xpath('.//a')[0]
+            p = cgi.parse_qs(urlparse(a.get('href')).query)
+            title = a.text_content()
+            guid = p['guid'][0]
+            geocode = None
+            disabled = False
+            for p in cols[5].text_content().split():
+                if p.startswith("(GC") and p.endswith(")"): geocode = str(p[1:-1])
+            if len(row.xpath('.//*[contains(@class, "Strike")]')) > 0:
+                disabled = True
+            results.append((wpt_type, guid, geocode, disabled, title))
+
+        page_builders = et.xpath('//td[contains(@class, "PageBuilderWidget")]')
+        next_url = None
+        next_data = {}
+        if len(page_builders) == 4:
+            builder = page_builders[1]
+            for a in builder.xpath('.//a'):
+                if 'Next' in a.text_content():
+                    href = a.get('href')
+                    if href is not None:
+                        postback = href.split("'")[1]
+                        form = et.find("//form")
+                        next_url = form.get("action")
+                        for elt in form.xpath('.//input[@type="hidden"]'):
+                            if elt.name.startswith("__"):
+                                next_data[elt.name] = elt.value
+                        next_data['__EVENTTARGET'] = postback
+                        next_data['__EVENTARGUMENT'] = ''
+                        
+
+        return results, next_url, next_data
+
+    def find_by_address(self, address, radius=100):
+        """
+        returns a number of caches, number of result pages first result page etree and base url
+
+        radius is in km
+        """
+        miles = "%.2f" % (float(radius) / 1.609344)
+
+        coords = self.address_to_coords(address)
+        if coords is None:
+            return None
+
+        params = urlencode({'lat': coords[0],
+                            'lng': coords[1],
+                            'dist': miles})
+        url = self.page_url("/seek/nearest.aspx?"+params)
+        et = self.send_req(url)
+
+        total_records = 0
+        total_pages = 0
+        try:
+            b = et.xpath('//*[contains(span, "Total Records")]/span')[0].findall('./b')
+            total_records = int(b[0].text)
+            total_pages = int(b[2].text)
+        except (TypeError, AttributeError), exc:
+            print "Error searching total records:", exc
+            return None
+
+        print "%d caches on %d pages" % (total_records, total_pages)
+
+        return total_records, total_pages, et, url
+
+    def get_search_results(self, start_et, base_url, count=None):
+        """
+        Parse and download search results from the results pages,
+        but no more then approximately count results (set None for infinity)
+        """
+        results = []
+        et = start_et
+        while True:
+            part, next_url, next_data = self.parse_page(et)
+            results.extend(part)
+            if count is not None and len(results) >= count:
+                break
+            if next_url is not None:
+                et = self.send_req(urljoin(base_url, next_url), urlencode(next_data))
+            else:
+                break
+
+        return results

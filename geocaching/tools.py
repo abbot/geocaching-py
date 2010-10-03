@@ -12,4 +12,3 @@ def geocode(gpx):
         return geocache.xpath('../*[local-name()="name"]')[0].text
     except (AttributeError, TypeError):
         return None
-
