@@ -8,6 +8,7 @@ import sys
 from geocaching import Geo, tools
 
 def main():
+    geo = Geo()
     parser = optparse.OptionParser(usage="%prog radius address...",
                                    description="Download caches for the given address and radius in km")
     opts, args = parser.parse_args()
@@ -18,9 +19,8 @@ def main():
     radius = int(args[0])
     address = ' '.join(args[1:])
         
-    geo = Geo()
     print "Logged in as %s" % geo.login_from_config()
-    count, pages, et, url = geo.find_by_address(address)
+    count, pages, et, url = geo.find_by_address(address, radius)
     print "Found %d caches on %d result pages." % (count, pages)
     print "Please enter the number of caches to download"
     print "(or just hit enter for all):"

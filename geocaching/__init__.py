@@ -332,6 +332,7 @@ class Geo(object):
             part, next_url, next_data = self.parse_page(et)
             results.extend(part)
             if count is not None and len(results) >= count:
+                results = results[:count]
                 break
             if next_url is not None:
                 et = self.send_req(urljoin(base_url, next_url), urlencode(next_data))

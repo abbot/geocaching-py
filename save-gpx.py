@@ -7,6 +7,7 @@ import sys
 from geocaching import Geo, tools
 
 def main():
+    geo = Geo()
     parser = optparse.OptionParser(usage="%prog GC-code [GC-code ...]",
                                    description="Saves GPX data to GCCODE.gpx files")
     opts, args = parser.parse_args()
@@ -14,7 +15,6 @@ def main():
         parser.print_help()
         sys.exit(1)
         
-    geo = Geo()
     print "Logged in as %s" % geo.login_from_config()
     for arg in args:
         guid = arg
