@@ -108,6 +108,12 @@ def cache_type(code):
         return cache_type_map[code]
     return code.lower().strip().replace(' ', '-')
 
+def lookup_by_header(soup, header):
+    for h2 in soup.findAll("h2"):
+        if header in h2.text:
+            div = h2.findParent().findParent()
+            return div.find("div", {"class": "item-content"})
+
 class Geo(object):
     cache_dir = os.path.expanduser("~/.cache/geocaching-py")
     config_dir = os.path.expanduser("~/.config/geocaching-py")
@@ -199,17 +205,30 @@ class Geo(object):
             return None
 
         short_desc = find_or_create(cache, "short_description")
+
         long_desc = find_or_create(cache, "long_description")
         hints = find_or_create(cache, "encoded_hints")
-        
-        short_desc.text = re.sub(r'\s+', ' ', info.find('//div[@id="div_sd"]').text_content()).strip()
-        long_desc.text = info_soup.find("div", {"id": "div_ld"}).renderContents().decode('utf-8')
+
+        tmp = lookup_by_header(info_soup, "Short Description")
+        if tmp is not None:
+            short_desc.text = re.sub(r'\s+', ' ', tmp.text.strip())
+        else:
+            short_desc.text = ""
+        tmp = lookup_by_header(info_soup, "Long Description")
+        if tmp is not None:
+            long_desc.text = tmp.renderContents().decode('utf-8')
+        else:
+            long_desc.text = ""
         long_desc.set("html", "True")
 
         try:
-            hints_text = re.sub(r'\s+', ' ', info_soup.find("div", {"id":"div_hint"}).div.renderContents().decode('utf-8')).strip()
-            hints_text = re.sub(r'<br ?/?>', "\n", hints_text).decode("rot13")
-            hints.text = hints_text
+            h = lookup_by_header(info_soup, "Additional Hints")
+            if h is not None:
+                decr = h.find("div", {"class": "hint-encrypted"})
+                hints.text = decr.text.strip()
+            #hints_text = re.sub(r'\s+', ' ', info_soup.find("div", {"id":"div_hint"}).div.renderContents().decode('utf-8')).strip()
+            #hints_text = re.sub(r'<br ?/?>', "\n", hints_text).decode("rot13")
+            #hints.text = hints_text
         except AttributeError:
             hints.text = "No hint"
 
@@ -253,7 +272,7 @@ class Geo(object):
         results = []
         rows = table.xpath('./tr[contains(@class, "Data")]')
         for row in rows:
-            url = row.xpath('.//img[contains(@src, "WptTypes")]')[0].get("src")
+            url = row.xpath('.//img[contains(@src, "wpttypes")]')[0].get("src")
             wpt_type = cache_type(url.split('/')[-1].split('.')[0])
             cols = row.xpath("./td")
             a = cols[5].xpath('.//a')[0]
@@ -263,7 +282,7 @@ class Geo(object):
             geocode = None
             disabled = False
             for p in cols[5].text_content().split():
-                if p.startswith("(GC") and p.endswith(")"): geocode = str(p[1:-1])
+                if p.startswith("GC"): geocode = p
             if len(row.xpath('.//*[contains(@class, "Strike")]')) > 0:
                 disabled = True
             results.append((wpt_type, guid, geocode, disabled, title))
